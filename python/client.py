@@ -1,19 +1,48 @@
-import socket
+import asyncio
+import json
+import websockets
 
 HOST = "127.0.0.1"
 PORT = 3002
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect((HOST, PORT))
+async def join_server(ws):
+    name = input("Welcome to the chat! What should people call you? ")
+    
+    payload = {
+        "message": name,
+        "event": "join"
+    }
+    dump = json.dumps(payload).encode("utf-8")
+    await ws.send(dump)
 
-message = input("You > ")
+    personal = await ws.recv()
+    print(f">> {personal}")
+    all = await ws.recv()
+    print(f">> {all}")
 
-while message != "exit":
-    sock.send(message.encode())
-    data = sock.recv(1024).decode()
+async def persist_connection(ws):
+    next_message = ""
+    while next_message != "EXIT!":
+        message = input("")
 
-    print("SERVER > " + data)
+        payload = {
+            "message": message,
+            "event": "message"
+        }
+        dump = json.dumps(payload).encode("utf-8")
+        await ws.send(dump)
 
-    message = input("You > ")
+        chat = await ws.recv()
+        print(f">> {chat}")
 
-sock.close()
+
+async def main():
+    uri = f"ws://{HOST}:{PORT}"
+    ws = await websockets.connect(uri)
+
+    await join_server(ws)
+    
+    await persist_connection(ws)
+    
+
+asyncio.run(main())
