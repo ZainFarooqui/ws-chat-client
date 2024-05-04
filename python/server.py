@@ -1,57 +1,83 @@
 import asyncio
 import json
-import websockets
 
 HOST = "127.0.0.1"
-PORT = 3002
+PORT = 3001
 
-CONNECTIONS = set()
+CONNECTIONS = {}
 
-def message_all(message):
-    websockets.broadcast(CONNECTIONS, message)
-
-async def message_all_but_sender(websocket, message):
+async def message_all(message, sender="SERVER"):
+    payload = f"[{sender}] >> {message}"
+    dump = json.dumps(payload).encode("utf-8")
     for conn in CONNECTIONS:
-        if conn != websocket:
-            await conn.send(message)
+        conn.write(dump)
+        await conn.drain()
 
 
-async def hello(websocket):
-    dump = b''
-    dump += await websocket.recv()
-    payload = json.loads(dump.decode("utf-8"))
-    name = payload["message"]
-    print(f"<<< {name}")
+async def message_all_but_sender(sender, message):
+    payload = f"[{CONNECTIONS[sender]}] >> {message}"
+    dump = json.dumps(payload).encode("utf-8")
 
-    greeting = f"Hello {name}!"
+    for conn, _ in CONNECTIONS.items():
+        if conn != sender:
+            conn.write(dump)
+            await conn.drain()
 
-    await websocket.send(greeting)
-    print(f">>> {greeting}")
 
-async def handle_new_joiner(websocket, name):
-    print("New joiner: " + name)    
-    personal_message = "You can leave at any time by CtrlC or typing EXIT!"
-    await websocket.send(personal_message)
-    
-    CONNECTIONS.add(websocket)
+async def handle_new_joiner(conn, name):
+    print("New joiner: " + name)
+    CONNECTIONS[conn] = name
     message = f"{name} has joined the chat"
-    message_all(message)
+    await message_all(message)
 
 
-async def handler(websocket):
+async def recieve(reader):
+    data = await reader.read(1024)
+    payload = json.loads(data.decode("utf-8"))
+    message = payload.get("message")
+    event = payload.get("event", "leave")
+    return message, event
+
+
+async def handle_leaver(conn, message):
+    if conn in CONNECTIONS:
+        del CONNECTIONS[conn]
+    conn.close()
+    await conn.wait_closed()
+
+    print(message)
+    await message_all(message)
+
+
+async def handler(reader, writer):
+    print(f"Connected by {writer.get_extra_info("peername")}")
+
     while True:
-        dump = b''
-        dump += await websocket.recv()
-        payload = json.loads(dump.decode("utf-8"))
+        try:
+            message, event = await recieve(reader)
+        except json.JSONDecodeError:
+            server_message = f"{CONNECTIONS[writer]} has unexpectedly lost connection"
+            await handle_leaver(writer, server_message)
+            break
 
-        if payload["event"] == "join":
-            await handle_new_joiner(websocket, payload["message"])
-        
-        if payload["event"] == "message":
-            await message_all_but_sender(websocket, payload["message"])
-    
+        if event == "join":
+            await handle_new_joiner(writer, message)
+
+        if event == "message":
+            await message_all_but_sender(writer, message)
+
+        if event == "leave":
+            server_message = f"{CONNECTIONS[writer]} has left the chat"
+            await handle_leaver(writer, server_message)
+            break
+
+
 async def main():
-    await websockets.serve(handler, HOST, PORT)
-    await asyncio.Future()
+    server = await asyncio.start_server(handler, HOST, PORT)
+
+    async with server:
+        print(f"Server started at {HOST}:{PORT}")
+        await server.serve_forever()
+
 
 asyncio.run(main())
